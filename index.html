@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FBB Operations Dashboard</title>
+<style>
+:root{--orange:#F26F21;--navy:#1F3A68;--ink:#1F2933;--muted:#8A94A0;--line:#E6E8EB;--bg:#F6F7F9}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--ink);font:15px/1.45 "Segoe UI",Roboto,Arial,sans-serif;padding:16px}
+.box{background:#fff;border:1px solid var(--line);border-top:4px solid var(--orange);border-radius:12px;padding:26px 24px;width:100%;max-width:360px}
+h1{margin:0 0 4px;font-size:20px;color:var(--navy)}
+p{margin:0 0 18px;color:var(--muted);font-size:13px}
+input[type=password]{width:100%;font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:8px}
+input[type=password]:focus{outline:2px solid var(--orange);border-color:transparent}
+label{display:flex;gap:8px;align-items:center;margin:12px 0 16px;font-size:13px;color:#52606D}
+button{width:100%;font:inherit;font-weight:600;padding:11px;border:0;border-radius:8px;background:var(--orange);color:#fff;cursor:pointer}
+button:disabled{opacity:.6}
+.err{color:#D32F2F;font-size:13px;min-height:18px;margin-top:10px}
+</style>
+</head>
+<body>
+<form class="box" id="f">
+  <h1>FBB Operations Dashboard</h1>
+  <p>This page is password protected. Enter the password to view the data.</p>
+  <input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+  <label><input type="checkbox" id="remember" checked> Remember on this device</label>
+  <button id="btn">Open dashboard</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+const P = {"salt": "jITN5NAQXh9dn5qPhwUDNA==", "iv": "/YyOJ2bZ7mZNkeNn", "parts": ["parts/202611210808193cbb98-0.bin", "parts/202611210808193cbb98-1.bin", "parts/202611210808193cbb98-2.bin", "parts/202611210808193cbb98-3.bin", "parts/202611210808193cbb98-4.bin", "parts/202611210808193cbb98-5.bin"], "iter": 600000, "gz": true};
+const KEY = 'dash_pw:' + location.pathname;  // mỗi dashboard (tổng hợp / từng tỉnh) nhớ mật khẩu riêng
+const b64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+// Dữ liệu lớn được tách thành nhiều file nhỏ (parts/*.bin) -> tải về rồi ghép lại
+class LoadError extends Error {}
+let CT = null;
+async function cipher(){
+  if (CT) return CT;
+  if (!P.parts) return (CT = b64(P.ct));
+  const bufs = await Promise.all(P.parts.map(async u => {
+    const r = await fetch(u).catch(() => null);
+    if (!r || !r.ok) throw new LoadError(u);
+    return new Uint8Array(await r.arrayBuffer());
+  }));
+  const out = new Uint8Array(bufs.reduce((n, b) => n + b.length, 0));
+  let o = 0; for (const b of bufs) { out.set(b, o); o += b.length; }
+  return (CT = out);
+}
+async function unlock(pw){
+  const ct = await cipher();
+  const base = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveKey']);
+  const key = await crypto.subtle.deriveKey({name:'PBKDF2', salt:b64(P.salt), iterations:P.iter, hash:'SHA-256'},
+                                            base, {name:'AES-GCM', length:256}, false, ['decrypt']);
+  const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv:b64(P.iv)}, key, ct);
+  const html = P.gz  // trang được nén gzip trước khi mã hoá (file đăng nhỏ hơn nhiều lần)
+    ? await new Response(new Blob([plain]).stream().pipeThrough(new DecompressionStream('gzip'))).text()
+    : new TextDecoder().decode(plain);
+  document.open(); document.write(html); document.close();
+}
+const store = { get(){ try { return localStorage.getItem(KEY); } catch(e) { return null; } },
+                set(v){ try { localStorage.setItem(KEY, v); } catch(e) {} },
+                del(){ try { localStorage.removeItem(KEY); } catch(e) {} } };
+const f = document.getElementById('f'), err = document.getElementById('err'), btn = document.getElementById('btn');
+f.onsubmit = async ev => {
+  ev.preventDefault(); err.textContent = ''; btn.disabled = true; btn.textContent = 'Opening…';
+  const pw = document.getElementById('pw').value;
+  try {
+    if (document.getElementById('remember').checked) store.set(pw); else store.del();
+    await unlock(pw);
+  } catch (e) {
+    if (e instanceof LoadError) err.textContent = 'Could not load the data (the page may have just been updated). Please reload.';
+    else { store.del(); err.textContent = 'Wrong password, please try again.'; }
+    btn.disabled = false; btn.textContent = 'Open dashboard';
+  }
+};
+const saved = store.get();
+if (!window.crypto || !crypto.subtle) err.textContent = 'This browser cannot decrypt the page. Please open it in Chrome or Safari.';
+else if (saved) unlock(saved).catch(e => {
+  if (e instanceof LoadError) err.textContent = 'Could not load the data (the page may have just been updated). Please reload.';
+  else store.del();
+});
+</script>
+</body>
+</html>
